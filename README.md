@@ -85,9 +85,7 @@ with the project file winning.
 ```json
 {
   "generatedFilePatterns": ["(?:^|/)web/src/api/gen/", "(?:^|/)[^/]*\\.sql\\.go$"],
-  "botLogins": ["house-review-bot"],
-  "blockedSkillPaths": [".agents/skills/address-review-comments/SKILL.md"],
-  "blockedCommandPatterns": ["(?:^|[\\s;&|])review\\s+comments\\s+(?:fetch|reply)\\b"]
+  "botLogins": ["house-review-bot"]
 }
 ```
 
@@ -95,14 +93,11 @@ with the project file winning.
 | --- | --- |
 | `generatedFilePatterns` | Regular expressions matching generated paths to drop from the authored diff. Replaces the built-in list, which already covers common protobuf, Connect, sqlc, and `gen/` output. |
 | `botLogins` | Extra logins to treat as review bots, added to the built-in list. Accounts GitHub types as `Bot` or that end in `[bot]` are detected automatically. |
-| `blockedSkillPaths` | Paths to a superseded project skill. While a workflow is active, the agent may not read them or name them in a shell command. |
-| `blockedCommandPatterns` | Extra shell command patterns to reject during a workflow, such as a legacy in-repo review-comment CLI. |
 
 Invalid patterns are reported as warnings when the command runs; the rest of the configuration still loads.
 
-Regardless of configuration, direct `gh pr view`, `gh pr diff`, and review-thread GraphQL calls are
-blocked while a workflow is active, and `/skill:address-review-comments` is disabled in favor of the
-command.
+While a workflow is active, direct `gh pr view`, `gh pr diff`, and review-thread GraphQL calls are
+blocked no matter how the extension is configured.
 
 ## Development
 

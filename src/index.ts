@@ -19,13 +19,10 @@ import {
 import { filterAuthorComments } from "./filters.js";
 import { currentBranch, ensurePullCheckout, pullRequestDiff, resolveRepositoryRoot, shortHead } from "./git.js";
 import { fetchGitHubReviewData, GitHubClient, GitHubUsernameCache } from "./github.js";
-import { resolveExtensionPath } from "./paths.js";
 import { makeAgentPrompt, summarizeFetch } from "./prompt.js";
 import { latestCustomEntryData } from "./session-entries.js";
 import { createLazyToolActivation } from "./tool-activation.js";
 import type { FetchResponse, WorkflowState } from "./types.js";
-
-const SKILL_BLOCK_REASON = `The ${REVIEW_COMMAND_NAME} skill is disabled. Use ${REVIEW_COMMAND} so the extension can enforce checkpoints.`;
 
 function commandExecutor(pi: ExtensionAPI) {
   return (command: string, args: string[], options?: { cwd?: string; signal?: AbortSignal; timeout?: number }) =>
@@ -79,25 +76,6 @@ class FetchProgress {
       { placement: "aboveEditor" },
     );
   }
-}
-
-/** True when the call reaches for a configured skill file that the extension supersedes. */
-function targetsBlockedSkill(toolName: string, input: unknown, cwd: string, blockedPaths: readonly string[]): boolean {
-  if (blockedPaths.length === 0) return false;
-  const params = input as { path?: unknown; command?: unknown };
-  const absolutePaths = blockedPaths.map((blockedPath) => resolveExtensionPath(blockedPath, cwd));
-  if (toolName === "read") {
-    const requested = typeof params.path === "string" ? params.path : "";
-    return absolutePaths.includes(resolveExtensionPath(requested, cwd));
-  }
-  if (toolName === "bash") {
-    const command = String(params.command ?? "");
-    return (
-      blockedPaths.some((blockedPath) => command.includes(blockedPath)) ||
-      absolutePaths.some((absolutePath) => command.includes(absolutePath))
-    );
-  }
-  return false;
 }
 
 export default function addressReviewCommentsExtension(pi: ExtensionAPI): void {
@@ -285,29 +263,15 @@ export default function addressReviewCommentsExtension(pi: ExtensionAPI): void {
     handler: runReviewCommand,
   });
 
-  pi.on("input", async (event, ctx) => {
-    if (new RegExp(`^/skill:${REVIEW_COMMAND_NAME}(?:\\s|$)`).test(event.text.trim())) {
-      ctx.ui.notify(SKILL_BLOCK_REASON, "warning");
-      return { action: "handled" };
-    }
-    return { action: "continue" };
-  });
-
-  pi.on("tool_call", async (event, ctx) => {
-    if (!activeWorkflow) return undefined;
-    const config = reviewConfig(ctx.cwd);
-    if (targetsBlockedSkill(event.toolName, event.input, ctx.cwd, config.blockedSkillPaths)) {
-      return { block: true, reason: SKILL_BLOCK_REASON };
-    }
-    if (event.toolName !== "bash") return undefined;
+  pi.on("tool_call", async (event) => {
+    if (!activeWorkflow || event.toolName !== "bash") return undefined;
 
     const command = String((event.input as { command?: unknown }).command ?? "");
-    const configuredOperation = config.blockedCommandPatterns.some((pattern) => pattern.test(command));
     const directGitHubReviewOperation =
       /\bgh\s+pr\s+(?:view|diff)\b/.test(command) ||
       (/\bgh\s+api\b/.test(command) &&
         /(reviewThreads|addPullRequestReviewThreadReply|resolveReviewThread)/.test(command));
-    if (configuredOperation || directGitHubReviewOperation) {
+    if (directGitHubReviewOperation) {
       return {
         block: true,
         reason: `Direct review-comment fetch/reply operations are blocked during this workflow. Use the fetched artifacts and ${CHECKPOINT_TOOL_NAME}.`,

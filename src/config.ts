@@ -7,9 +7,7 @@
  * ```json
  * {
  *   "generatedFilePatterns": ["(?:^|/)web/src/gen/"],
- *   "botLogins": ["house-review-bot"],
- *   "blockedSkillPaths": [".agents/skills/address-review-comments/SKILL.md"],
- *   "blockedCommandPatterns": ["(?:^|[\\s;&|])review\\s+comments\\s+(?:fetch|reply)\\b"]
+ *   "botLogins": ["house-review-bot"]
  * }
  * ```
  */
@@ -49,10 +47,6 @@ export interface ReviewConfig {
   configPaths: string[];
   generatedFilePatterns: RegExp[];
   botLogins: Set<string>;
-  /** Repository-relative paths that the agent may not read or shell out to during a workflow. */
-  blockedSkillPaths: string[];
-  /** Extra bash command patterns rejected during a workflow, such as a legacy review-comment CLI. */
-  blockedCommandPatterns: RegExp[];
   /** Human-readable problems found while loading, surfaced once per working directory. */
   warnings: string[];
 }
@@ -60,8 +54,6 @@ export interface ReviewConfig {
 interface ConfigFile {
   generatedFilePatterns?: string[];
   botLogins?: string[];
-  blockedSkillPaths?: string[];
-  blockedCommandPatterns?: string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -91,8 +83,6 @@ function readConfigFile(filePath: string, warnings: string[]): ConfigFile | unde
     return {
       generatedFilePatterns: stringList(parsed.generatedFilePatterns),
       botLogins: stringList(parsed.botLogins),
-      blockedSkillPaths: stringList(parsed.blockedSkillPaths),
-      blockedCommandPatterns: stringList(parsed.blockedCommandPatterns),
     };
   } catch (error) {
     warnings.push(`Failed to read ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
@@ -128,8 +118,6 @@ export function loadReviewConfig(cwd: string, homeDir: string = homedir()): Revi
     configPaths: loaded.map((entry) => entry.path),
     generatedFilePatterns: DEFAULT_GENERATED_FILE_PATTERNS,
     botLogins: new Set(DEFAULT_BOT_LOGINS),
-    blockedSkillPaths: [],
-    blockedCommandPatterns: [],
     warnings,
   };
 
@@ -143,15 +131,6 @@ export function loadReviewConfig(cwd: string, homeDir: string = homedir()): Revi
       );
     }
     for (const login of file.botLogins ?? []) config.botLogins.add(login);
-    if (file.blockedSkillPaths) config.blockedSkillPaths = file.blockedSkillPaths;
-    if (file.blockedCommandPatterns) {
-      config.blockedCommandPatterns = compilePatterns(
-        file.blockedCommandPatterns,
-        path,
-        "blockedCommandPatterns",
-        warnings,
-      );
-    }
   }
   return config;
 }

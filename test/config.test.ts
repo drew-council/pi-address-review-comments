@@ -34,8 +34,6 @@ test("defaults apply when no configuration file exists", () => {
   const config = loadReviewConfig(cwd, homeDir);
   expect(config.configPaths).toEqual([]);
   expect(config.warnings).toEqual([]);
-  expect(config.blockedSkillPaths).toEqual([]);
-  expect(config.blockedCommandPatterns).toEqual([]);
   expect([...config.botLogins].sort()).toEqual([...DEFAULT_BOT_LOGINS].sort());
   expect(config.generatedFilePatterns.some((pattern) => pattern.test("web/src/api/client_pb.ts"))).toBe(true);
 });
@@ -43,7 +41,6 @@ test("defaults apply when no configuration file exists", () => {
 test("project configuration overrides the global file key by key", async () => {
   const globalPath = await writeConfig("global", {
     botLogins: ["house-review-bot"],
-    blockedSkillPaths: [".agents/skills/address-review-comments/SKILL.md"],
     generatedFilePatterns: ["(?:^|/)global/"],
   });
   const projectPath = await writeConfig("project", {
@@ -56,25 +53,9 @@ test("project configuration overrides the global file key by key", async () => {
   expect(config.botLogins.has("house-review-bot")).toBe(true);
   expect(config.botLogins.has("project-bot")).toBe(true);
   expect(config.botLogins.has("cursor")).toBe(true);
-  expect(config.blockedSkillPaths).toEqual([".agents/skills/address-review-comments/SKILL.md"]);
   expect(config.generatedFilePatterns).toHaveLength(1);
   expect(config.generatedFilePatterns[0]?.test("project/client.ts")).toBe(true);
   expect(config.generatedFilePatterns[0]?.test("global/client.ts")).toBe(false);
-});
-
-test("configured command patterns compile and match legacy review commands", async () => {
-  await writeConfig("global", {
-    blockedCommandPatterns: [
-      "(?:^|[\\s;&|])review\\s+comments\\s+(?:fetch|reply)\\b",
-      "(?:^|[\\s;&|])go\\s+run\\b[\\s\\S]*cmd/review[\\s\\S]*comments\\s+(?:fetch|reply)\\b",
-    ],
-  });
-
-  const config = loadReviewConfig(cwd, homeDir);
-  const blocks = (command: string) => config.blockedCommandPatterns.some((pattern) => pattern.test(command));
-  expect(blocks("review comments fetch 42")).toBe(true);
-  expect(blocks("go run ./cmd/review comments reply --thread 1")).toBe(true);
-  expect(blocks("git status")).toBe(false);
 });
 
 test("invalid entries are reported as warnings instead of failing the load", async () => {
