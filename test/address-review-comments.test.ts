@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
-import { readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseAddressReviewArgs } from "../src/args.js";
 import {
   createReviewArtifactDirectory,
+  diffPaths,
   filterGeneratedDiff,
   writeFetchArtifacts,
   writeReplyRequest,
@@ -12,6 +14,7 @@ import { createReplyRequest } from "../src/attribution.js";
 import { REVIEW_COMMAND_NAME, REVIEW_COMMAND_USAGE } from "../src/constants.js";
 import { queueCheckpointFeedback } from "../src/feedback-message.js";
 import { filterAuthorComments } from "../src/filters.js";
+import { generatedPaths } from "../src/git.js";
 import { fetchGitHubReviewData, GitHubClient, GitHubUsernameCache, ReviewThreadResolveError } from "../src/github.js";
 import { summarizeStack } from "../src/prompt.js";
 import type { CommandExecutor, ExecResult, ReviewComment, ReviewThread } from "../src/types.js";
@@ -509,17 +512,91 @@ test("keeps workflow requests and fetch artifacts in one temporary directory", a
   }
 });
 
-test("filters generated files from the authored diff without dropping normal files", () => {
-  const authored = "diff --git a/src/feature.ts b/src/feature.ts\n+authored\n";
-  const generated = "diff --git a/web/src/api/client_pb.ts b/web/src/api/client_pb.ts\n+generated\n";
-  expect(filterGeneratedDiff(authored + generated)).toBe(authored);
+const authoredSection = "diff --git a/src/feature.ts b/src/feature.ts\n+authored\n";
+const generatedSection = "diff --git a/web/src/api/client_pb.ts b/web/src/api/client_pb.ts\n+generated\n";
+
+test("lists the files a diff touches", () => {
+  expect(diffPaths(authoredSection + generatedSection)).toEqual(["src/feature.ts", "web/src/api/client_pb.ts"]);
+  expect(diffPaths("")).toEqual([]);
 });
 
-test("configured generated-file patterns replace the built-in ones", () => {
-  const protobuf = "diff --git a/web/src/api/client_pb.ts b/web/src/api/client_pb.ts\n+generated\n";
-  const schema = "diff --git a/db/table_definitions.yaml b/db/table_definitions.yaml\n+generated\n";
-  const patterns = [/(?:^|\/)table_definitions\.yaml$/];
-  expect(filterGeneratedDiff(protobuf + schema, patterns)).toBe(protobuf);
+test("drops generated sections from the authored diff without dropping normal files", () => {
+  const isGenerated = (filePath: string) => filePath === "web/src/api/client_pb.ts";
+  expect(filterGeneratedDiff(authoredSection + generatedSection, isGenerated)).toBe(authoredSection);
+  expect(filterGeneratedDiff(authoredSection + generatedSection, () => false)).toBe(authoredSection + generatedSection);
+});
+
+test("reads generated files from the repository's linguist-generated attributes", async () => {
+  const calls: string[][] = [];
+  const exec: CommandExecutor = async (command, args, options) => {
+    expect(command).toBe("git");
+    expect(options?.cwd).toBe("/repo");
+    calls.push(args);
+    const paths = args.slice(args.indexOf("--") + 1);
+    const value = (filePath: string) => {
+      if (filePath.endsWith("_pb.ts")) return "true";
+      if (filePath.startsWith("api/gen/")) return "set";
+      if (filePath === "src/exception.ts") return "unset";
+      return "unspecified";
+    };
+    return success(paths.map((filePath) => `${filePath}\0linguist-generated\0${value(filePath)}\0`).join(""));
+  };
+
+  const generated = await generatedPaths(exec, "/repo", [
+    "web/src/api/client_pb.ts",
+    "api/gen/service.go",
+    "src/exception.ts",
+    "src/feature.ts",
+  ]);
+  expect([...generated].sort()).toEqual(["api/gen/service.go", "web/src/api/client_pb.ts"]);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.slice(0, 4)).toEqual(["check-attr", "-z", "linguist-generated", "--"]);
+});
+
+test("splits long path lists across several check-attr calls", async () => {
+  const batches: number[] = [];
+  const exec: CommandExecutor = async (_command, args) => {
+    const paths = args.slice(args.indexOf("--") + 1);
+    batches.push(paths.length);
+    return success(paths.map((filePath) => `${filePath}\0linguist-generated\0unspecified\0`).join(""));
+  };
+
+  const paths = Array.from({ length: 450 }, (_value, index) => `src/file-${index}.ts`);
+  expect(await generatedPaths(exec, "/repo", paths)).toEqual(new Set());
+  expect(batches).toEqual([200, 200, 50]);
+});
+
+test("a failing check-attr call is reported instead of silently keeping everything", async () => {
+  const exec: CommandExecutor = async () => ({ code: 128, stdout: "", stderr: "not a git repository" });
+  await expect(generatedPaths(exec, "/repo", ["src/feature.ts"])).rejects.toThrow(/not a git repository/);
+});
+
+test("real git reports the paths a .gitattributes file marks as generated", async () => {
+  const spawnExec: CommandExecutor = async (command, args, options) => {
+    const child = Bun.spawn([command, ...args], { cwd: options?.cwd, stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    return { code: await child.exited, stdout, stderr };
+  };
+
+  const repository = await mkdtemp(path.join(tmpdir(), "pi-review-gitattributes-"));
+  try {
+    expect((await spawnExec("git", ["init", "--quiet", "."], { cwd: repository })).code).toBe(0);
+    await writeFile(
+      path.join(repository, ".gitattributes"),
+      "*.pb.go linguist-generated=true\napi/gen/** linguist-generated\nsrc/exception.go -linguist-generated\n",
+      "utf8",
+    );
+
+    const generated = await generatedPaths(spawnExec, repository, [
+      "api/service.pb.go",
+      "api/gen/client.ts",
+      "src/exception.go",
+      "src/feature.go",
+    ]);
+    expect([...generated].sort()).toEqual(["api/gen/client.ts", "api/service.pb.go"]);
+  } finally {
+    await rm(repository, { recursive: true, force: true });
+  }
 });
 
 test("validates review command arguments", () => {

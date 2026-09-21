@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { parseAddressReviewArgs } from "./args.js";
-import { createReviewArtifactDirectory, writeFetchArtifacts } from "./artifacts.js";
+import { createReviewArtifactDirectory, diffPaths, writeFetchArtifacts } from "./artifacts.js";
 import { registerCheckpointTool } from "./checkpoint-tool.js";
 import { createReviewConfigCache } from "./config.js";
 import {
@@ -17,7 +17,14 @@ import {
   STATUS_ID,
 } from "./constants.js";
 import { filterAuthorComments } from "./filters.js";
-import { currentBranch, ensurePullCheckout, pullRequestDiff, resolveRepositoryRoot, shortHead } from "./git.js";
+import {
+  currentBranch,
+  ensurePullCheckout,
+  generatedPaths,
+  pullRequestDiff,
+  resolveRepositoryRoot,
+  shortHead,
+} from "./git.js";
 import { fetchGitHubReviewData, GitHubClient, GitHubUsernameCache } from "./github.js";
 import { makeAgentPrompt, summarizeFetch } from "./prompt.js";
 import { latestCustomEntryData } from "./session-entries.js";
@@ -201,12 +208,24 @@ export default function addressReviewCommentsExtension(pi: ExtensionAPI): void {
         review_summaries: filtered.reviews,
         stack: githubData.stack,
       };
+      let isGenerated: (filePath: string) => boolean = () => false;
+      try {
+        const generated = await generatedPaths(exec, repositoryRoot, diffPaths(githubData.diff));
+        isGenerated = (filePath) => generated.has(filePath);
+      } catch (error) {
+        ctx.ui.notify(
+          `Could not read linguist-generated attributes; keeping the full diff: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          "warning",
+        );
+      }
       const response = await writeFetchArtifacts(
         artifactPaths,
         { repository, selector, pull_request_number: pull.number },
         githubData.diff,
         responseWithoutPath,
-        config.generatedFilePatterns,
+        isGenerated,
       );
       progress.complete("artifacts");
 

@@ -1,7 +1,6 @@
 import { mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { DEFAULT_GENERATED_FILE_PATTERNS } from "./config.js";
 import type { FetchRequest, FetchResponse, ReplyRequest } from "./types.js";
 
 export interface ReviewArtifactPaths {
@@ -24,23 +23,26 @@ function formatJson(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
-export function isGeneratedPath(
-  filePath: string,
-  patterns: readonly RegExp[] = DEFAULT_GENERATED_FILE_PATTERNS,
-): boolean {
-  return patterns.some((pattern) => pattern.test(filePath));
+/** Each `diff --git` section paired with the post-image path it touches. */
+function diffSections(diff: string): Array<{ text: string; filePath?: string }> {
+  return diff.split(/(?=^diff --git )/m).map((text) => {
+    const header = text.match(/^diff --git a\/.+? b\/(.+)$/m);
+    return header ? { text, filePath: header[1] } : { text };
+  });
 }
 
-export function filterGeneratedDiff(
-  diff: string,
-  patterns: readonly RegExp[] = DEFAULT_GENERATED_FILE_PATTERNS,
-): string {
-  const sections = diff.split(/(?=^diff --git )/m);
-  return sections
-    .filter((section) => {
-      const header = section.match(/^diff --git a\/.+? b\/(.+)$/m);
-      return !header || !isGeneratedPath(header[1] ?? "", patterns);
-    })
+/** The files a diff touches, in the order they appear. */
+export function diffPaths(diff: string): string[] {
+  const paths = diffSections(diff)
+    .map((section) => section.filePath)
+    .filter((filePath): filePath is string => Boolean(filePath));
+  return [...new Set(paths)];
+}
+
+export function filterGeneratedDiff(diff: string, isGenerated: (filePath: string) => boolean): string {
+  return diffSections(diff)
+    .filter((section) => !section.filePath || !isGenerated(section.filePath))
+    .map((section) => section.text)
     .join("");
 }
 
@@ -62,12 +64,12 @@ export async function writeFetchArtifacts(
   request: FetchRequest,
   diff: string,
   responseWithoutPath: Omit<FetchResponse, "authored_diff_path">,
-  generatedFilePatterns?: readonly RegExp[],
+  isGenerated: (filePath: string) => boolean = () => false,
 ): Promise<FetchResponse> {
   const response: FetchResponse = { ...responseWithoutPath, authored_diff_path: paths.diffPath };
   await Promise.all([
     writeFile(paths.fetchRequestPath, formatJson(request), "utf8"),
-    writeFile(paths.diffPath, filterGeneratedDiff(diff, generatedFilePatterns), "utf8"),
+    writeFile(paths.diffPath, filterGeneratedDiff(diff, isGenerated), "utf8"),
     writeFile(paths.fetchResponsePath, formatJson(response), "utf8"),
   ]);
   return response;

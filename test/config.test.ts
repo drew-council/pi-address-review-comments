@@ -35,38 +35,26 @@ test("defaults apply when no configuration file exists", () => {
   expect(config.configPaths).toEqual([]);
   expect(config.warnings).toEqual([]);
   expect([...config.botLogins].sort()).toEqual([...DEFAULT_BOT_LOGINS].sort());
-  expect(config.generatedFilePatterns.some((pattern) => pattern.test("web/src/api/client_pb.ts"))).toBe(true);
 });
 
-test("project configuration overrides the global file key by key", async () => {
-  const globalPath = await writeConfig("global", {
-    botLogins: ["house-review-bot"],
-    generatedFilePatterns: ["(?:^|/)global/"],
-  });
-  const projectPath = await writeConfig("project", {
-    botLogins: ["project-bot"],
-    generatedFilePatterns: ["(?:^|/)project/"],
-  });
+test("bot logins from both files add to the built-in list", async () => {
+  const globalPath = await writeConfig("global", { botLogins: ["house-review-bot"] });
+  const projectPath = await writeConfig("project", { botLogins: ["project-bot"] });
 
   const config = loadReviewConfig(cwd, homeDir);
   expect(config.configPaths).toEqual([globalPath, projectPath]);
   expect(config.botLogins.has("house-review-bot")).toBe(true);
   expect(config.botLogins.has("project-bot")).toBe(true);
   expect(config.botLogins.has("cursor")).toBe(true);
-  expect(config.generatedFilePatterns).toHaveLength(1);
-  expect(config.generatedFilePatterns[0]?.test("project/client.ts")).toBe(true);
-  expect(config.generatedFilePatterns[0]?.test("global/client.ts")).toBe(false);
 });
 
-test("invalid entries are reported as warnings instead of failing the load", async () => {
-  const filePath = await writeConfig("global", { generatedFilePatterns: ["(unclosed", "(?:^|/)gen/"] });
+test("entries of the wrong shape are ignored without failing the load", async () => {
+  await writeConfig("global", { botLogins: ["house-review-bot", 7, "  "] });
 
   const config = loadReviewConfig(cwd, homeDir);
-  expect(config.generatedFilePatterns).toHaveLength(1);
-  expect(config.generatedFilePatterns[0]?.test("api/gen/client.ts")).toBe(true);
-  expect(config.warnings).toHaveLength(1);
-  expect(config.warnings[0] ?? "").toContain(filePath);
-  expect(config.warnings[0] ?? "").toContain("generatedFilePatterns");
+  expect(config.warnings).toEqual([]);
+  expect(config.botLogins.has("house-review-bot")).toBe(true);
+  expect(config.botLogins.size).toBe(DEFAULT_BOT_LOGINS.length + 1);
 });
 
 test("malformed JSON falls back to defaults with a warning", async () => {

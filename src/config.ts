@@ -6,7 +6,6 @@
  *
  * ```json
  * {
- *   "generatedFilePatterns": ["(?:^|/)web/src/gen/"],
  *   "botLogins": ["house-review-bot"]
  * }
  * ```
@@ -15,19 +14,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_BASENAME } from "./constants.js";
-
-/** Codegen output that reviewers never edit by hand, dropped from the authored diff. */
-export const DEFAULT_GENERATED_FILE_PATTERNS = [
-  /(?:^|\/)[^/]*\.connect\.go$/,
-  /(?:^|\/)[^/]*\.grpc\.pb\.(?:cc|h)$/,
-  /(?:^|\/)[^/]*\.pb\.(?:cc|go|h)$/,
-  /(?:^|\/)[^/]*\.sql\.go$/,
-  /(?:^|\/)[^/]*_(?:connect|pb)\.(?:d\.ts|js|ts)$/,
-  /(?:^|\/)[^/]*_gen\.(?:json|md)$/,
-  /(?:^|\/)[^/]*_grpc\.pb\.go$/,
-  /(?:^|\/)[^/]*_pb2(?:_grpc)?\.(?:py|pyi)$/,
-  /(?:^|\/)gen\//,
-];
 
 /**
  * Review bots that GitHub reports as regular users. Accounts with a `Bot` type or a `[bot]` login
@@ -45,14 +31,12 @@ export const DEFAULT_BOT_LOGINS = [
 export interface ReviewConfig {
   /** The files the configuration was merged from, closest last. */
   configPaths: string[];
-  generatedFilePatterns: RegExp[];
   botLogins: Set<string>;
   /** Human-readable problems found while loading, surfaced once per working directory. */
   warnings: string[];
 }
 
 interface ConfigFile {
-  generatedFilePatterns?: string[];
   botLogins?: string[];
 }
 
@@ -80,30 +64,11 @@ function readConfigFile(filePath: string, warnings: string[]): ConfigFile | unde
       warnings.push(`${filePath} is not a JSON object; ignoring it.`);
       return undefined;
     }
-    return {
-      generatedFilePatterns: stringList(parsed.generatedFilePatterns),
-      botLogins: stringList(parsed.botLogins),
-    };
+    return { botLogins: stringList(parsed.botLogins) };
   } catch (error) {
     warnings.push(`Failed to read ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;
   }
-}
-
-function compilePatterns(sources: string[], filePath: string, key: string, warnings: string[]): RegExp[] {
-  const patterns: RegExp[] = [];
-  for (const source of sources) {
-    try {
-      patterns.push(new RegExp(source));
-    } catch (error) {
-      warnings.push(
-        `${filePath} has an invalid ${key} entry ${JSON.stringify(source)}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  }
-  return patterns;
 }
 
 export function loadReviewConfig(cwd: string, homeDir: string = homedir()): ReviewConfig {
@@ -116,20 +81,10 @@ export function loadReviewConfig(cwd: string, homeDir: string = homedir()): Revi
 
   const config: ReviewConfig = {
     configPaths: loaded.map((entry) => entry.path),
-    generatedFilePatterns: DEFAULT_GENERATED_FILE_PATTERNS,
     botLogins: new Set(DEFAULT_BOT_LOGINS),
     warnings,
   };
-
-  for (const { path, file } of loaded) {
-    if (file.generatedFilePatterns) {
-      config.generatedFilePatterns = compilePatterns(
-        file.generatedFilePatterns,
-        path,
-        "generatedFilePatterns",
-        warnings,
-      );
-    }
+  for (const { file } of loaded) {
     for (const login of file.botLogins ?? []) config.botLogins.add(login);
   }
   return config;

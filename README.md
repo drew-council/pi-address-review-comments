@@ -45,7 +45,7 @@ On start the extension:
 2. Fetches unresolved review threads, top-level review summaries, and stack context (when the PR is
    part of a GitHub stack) through the `gh` GraphQL API.
 3. Writes `command-request.json`, `fetch-request.json`, `fetch-response.json`, and `authored.diff`
-   into a temporary artifact directory, filtering generated files out of the diff.
+   into a temporary artifact directory, leaving generated files out of the diff.
 4. Sends the agent a prompt pointing at those artifacts, with the rules for the workflow.
 
 A status entry shows the remaining thread count, and the workflow survives `/reload` and session
@@ -76,25 +76,34 @@ Every posted reply gets a standardized footer identifying the agent and its huma
 
 The footer is stripped again when review threads are read back, so it never clutters the agent's context.
 
+## Generated files
+
+Generated files are left out of the authored diff so the agent reviews only hand-written changes.
+Which files count comes from the repository itself: `git check-attr linguist-generated` against your
+`.gitattributes`, the same attribute GitHub uses to collapse generated files in a pull request diff.
+
+```gitattributes
+*.pb.go linguist-generated=true
+web/src/api/gen/** linguist-generated
+```
+
+Nothing is dropped in a repository without those attributes, and a repository that already marks its
+codegen for GitHub needs no extra setup. If the lookup fails, the command warns and keeps the full diff.
+
 ## Configuration
 
-Configuration is optional. Pi reads `.pi/extensions/address-review-comments.json` in the project,
-falling back to `~/.pi/agent/extensions/address-review-comments.json`, and merges them key by key
-with the project file winning.
+Configuration is optional and has a single key. Pi reads `.pi/extensions/address-review-comments.json`
+in the project, falling back to `~/.pi/agent/extensions/address-review-comments.json`.
 
 ```json
 {
-  "generatedFilePatterns": ["(?:^|/)web/src/api/gen/", "(?:^|/)[^/]*\\.sql\\.go$"],
   "botLogins": ["house-review-bot"]
 }
 ```
 
-| Key | Meaning |
-| --- | --- |
-| `generatedFilePatterns` | Regular expressions matching generated paths to drop from the authored diff. Replaces the built-in list, which already covers common protobuf, Connect, sqlc, and `gen/` output. |
-| `botLogins` | Extra logins to treat as review bots, added to the built-in list. Accounts GitHub types as `Bot` or that end in `[bot]` are detected automatically. |
-
-Invalid patterns are reported as warnings when the command runs; the rest of the configuration still loads.
+`botLogins` names review bots that GitHub reports as ordinary users, so their comments are flagged as
+bot-authored. Accounts GitHub types as `Bot` or whose login ends in `[bot]` are detected automatically,
+as are several common hosted reviewers.
 
 While a workflow is active, direct `gh pr view`, `gh pr diff`, and review-thread GraphQL calls are
 blocked no matter how the extension is configured.
