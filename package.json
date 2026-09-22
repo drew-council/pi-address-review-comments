@@ -1,6 +1,6 @@
 {
   "name": "@bizmyth/pi-address-review-comments",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A supervised GitHub PR review-comment workflow for the Pi coding agent",
   "type": "module",
   "license": "MIT",
