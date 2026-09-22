@@ -1,16 +1,7 @@
-import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import {
-  type Component,
-  Key,
-  Markdown,
-  matchesKey,
-  type TUI,
-  truncateToWidth,
-  visibleWidth,
-} from "@earendil-works/pi-tui";
+import { DynamicBorder, type Theme } from "@earendil-works/pi-coding-agent";
+import { Container, type SelectItem, SelectList, type SelectListTheme, Text, type TUI } from "@earendil-works/pi-tui";
 import { CHECKPOINT_ACTIONS, type CheckpointAction, type CheckpointOption, type CheckpointParams } from "./types.js";
 
-const OPTIONS = CHECKPOINT_ACTIONS.map((action) => action.option);
 const DEFAULT_ACTION: CheckpointOption = "resolve";
 
 export function checkpointAction(option: CheckpointOption): CheckpointAction {
@@ -21,128 +12,78 @@ function actionAt(index: number): CheckpointAction {
   return CHECKPOINT_ACTIONS[index] ?? CHECKPOINT_ACTIONS[0];
 }
 
-function makeMarkdown(checkpoint: CheckpointParams): string {
-  const reviewer = checkpoint.reviewer ? `\n**Reviewer:** @${checkpoint.reviewer}` : "";
-  const recommended = checkpoint.recommendedAction
-    ? `\n**Recommended action:** \`${checkpoint.recommendedAction}\``
-    : "";
-  return `# Review checkpoint\n\n**Location:** \`${checkpoint.location}\`${reviewer}${recommended}\n\n---\n\n${checkpoint.checkpointMarkdown}\n\n---\n\n## Draft reply\n\n${checkpoint.draftReply}`;
+function selectListTheme(theme: Theme): SelectListTheme {
+  return {
+    selectedPrefix: (text) => theme.fg("accent", text),
+    selectedText: (text) => theme.fg("accent", text),
+    description: (text) => theme.fg("muted", text),
+    scrollInfo: (text) => theme.fg("muted", text),
+    noMatch: (text) => theme.fg("muted", text),
+  };
 }
 
-function padToWidth(line: string, width: number): string {
-  const truncated = truncateToWidth(line, width, "");
-  return truncated + " ".repeat(Math.max(0, width - visibleWidth(truncated)));
+function metadataLine(checkpoint: CheckpointParams): string {
+  return [
+    `Location: ${checkpoint.location}`,
+    checkpoint.reviewer ? `Reviewer: @${checkpoint.reviewer}` : undefined,
+    checkpoint.recommendedAction ? `Recommended: ${checkpoint.recommendedAction}` : undefined,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("   ");
 }
 
-export class ReviewCheckpointDialog implements Component {
-  private readonly markdown: Markdown;
-  private scrollOffset = 0;
-  private selectedIndex: number;
+/**
+ * Compact, non-overlay action picker for a review checkpoint.
+ *
+ * The full checkpoint — reviewer, analysis, relevant diff, and draft reply — is rendered
+ * into the transcript by the checkpoint tool's `renderCall`. Keeping this picker out of the
+ * overlay layer leaves pi's native transcript scrolling (mouse wheel, PgUp/PgDn, Home/End)
+ * available while the user reviews that content and decides.
+ */
+export class ReviewCheckpointDialog extends Container {
+  private readonly selectList: SelectList;
 
   constructor(
     private readonly tui: TUI,
-    private readonly theme: Theme,
+    theme: Theme,
     checkpoint: CheckpointParams,
     private readonly done: (result: CheckpointOption | undefined) => void,
   ) {
-    this.markdown = new Markdown(makeMarkdown(checkpoint), 1, 0, getMarkdownTheme(), {
-      bgColor: (text) => theme.bg("customMessageBg", text),
-    });
-    this.selectedIndex = Math.max(0, OPTIONS.indexOf(checkpoint.recommendedAction ?? DEFAULT_ACTION));
-  }
+    super();
 
-  render(width: number): string[] {
-    const availableHeight = Math.max(1, this.tui.terminal.rows - 2);
-    const height = Math.min(availableHeight, Math.max(12, Math.floor(this.tui.terminal.rows * 0.9)));
-    const bodyWidth = Math.max(1, width - 2);
-    const bodyLines = this.markdown.render(bodyWidth);
-    const viewportHeight = Math.max(1, height - 7);
-    const maxScrollOffset = Math.max(0, bodyLines.length - viewportHeight);
-    this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxScrollOffset));
+    const items: SelectItem[] = CHECKPOINT_ACTIONS.map((action, index) => ({
+      value: action.option,
+      label: `${index + 1}. ${action.option}`,
+      description: action.label,
+    }));
+    this.selectList = new SelectList(items, items.length, selectListTheme(theme));
+    this.selectList.onSelect = (item) => done(item.value as CheckpointOption);
+    this.selectList.onCancel = () => done(undefined);
+    const recommendedIndex = CHECKPOINT_ACTIONS.findIndex(
+      (action) => action.option === (checkpoint.recommendedAction ?? DEFAULT_ACTION),
+    );
+    this.selectList.setSelectedIndex(recommendedIndex >= 0 ? recommendedIndex : 0);
 
-    const visibleBody = bodyLines.slice(this.scrollOffset, this.scrollOffset + viewportHeight);
-    while (visibleBody.length < viewportHeight) {
-      visibleBody.push(this.theme.bg("customMessageBg", " ".repeat(bodyWidth)));
-    }
-
-    return [
-      this.border("╭", "╮", width),
-      this.frame(this.theme.fg("accent", this.theme.bold("Review checkpoint")), width),
-      this.frame(this.scrollText(bodyLines.length, viewportHeight), width),
-      ...visibleBody.map((line) => this.frame(line, width)),
-      this.frame(this.actionText(), width),
-      this.frame(this.theme.fg("dim", actionAt(this.selectedIndex).label), width),
-      this.frame(
-        this.theme.fg("dim", "↑↓/PgUp/PgDn scroll • ←→ choose • 1-6 shortcut • Enter select • Esc abort"),
-        width,
-      ),
-      this.border("╰", "╯", width),
-    ].slice(0, height);
+    const border = (text: string) => theme.fg("accent", text);
+    this.addChild(new DynamicBorder(border));
+    this.addChild(new Text(theme.fg("accent", theme.bold("Review checkpoint")), 1, 0));
+    this.addChild(new Text(theme.fg("dim", metadataLine(checkpoint)), 1, 0));
+    this.addChild(new Text(theme.fg("dim", "Full analysis and draft reply are in the transcript above."), 1, 0));
+    this.addChild(this.selectList);
+    this.addChild(new Text(theme.fg("dim", "↑↓ choose • 1-6 jump • Enter confirm • Esc abort"), 1, 0));
+    this.addChild(new DynamicBorder(border));
   }
 
   handleInput(data: string): void {
-    const page = Math.max(3, Math.floor(this.tui.terminal.rows * 0.5));
-    if (matchesKey(data, Key.escape)) {
-      this.done(undefined);
-      return;
+    const match = /^([1-6])$/.exec(data);
+    if (match) {
+      const index = Number(match[1]) - 1;
+      if (index < CHECKPOINT_ACTIONS.length) {
+        this.done(actionAt(index).option);
+        return;
+      }
     }
-    if (matchesKey(data, Key.enter)) {
-      this.done(actionAt(this.selectedIndex).option);
-      return;
-    }
-    if (/^[1-6]$/.test(data)) {
-      this.done(actionAt(Number(data) - 1).option);
-      return;
-    }
-    if (matchesKey(data, Key.left)) {
-      this.selectedIndex = (this.selectedIndex + CHECKPOINT_ACTIONS.length - 1) % CHECKPOINT_ACTIONS.length;
-    } else if (matchesKey(data, Key.right) || matchesKey(data, Key.tab)) {
-      this.selectedIndex = (this.selectedIndex + 1) % CHECKPOINT_ACTIONS.length;
-    } else if (matchesKey(data, Key.up)) {
-      this.scrollOffset = Math.max(0, this.scrollOffset - 1);
-    } else if (matchesKey(data, Key.down)) {
-      this.scrollOffset += 1;
-    } else if (matchesKey(data, Key.pageUp)) {
-      this.scrollOffset = Math.max(0, this.scrollOffset - page);
-    } else if (matchesKey(data, Key.pageDown)) {
-      this.scrollOffset += page;
-    } else if (matchesKey(data, Key.home)) {
-      this.scrollOffset = 0;
-    } else if (matchesKey(data, Key.end)) {
-      this.scrollOffset = Number.MAX_SAFE_INTEGER;
-    } else {
-      return;
-    }
+    this.selectList.handleInput(data);
     this.tui.requestRender();
-  }
-
-  invalidate(): void {
-    this.markdown.invalidate();
-  }
-
-  private border(left: string, right: string, width: number): string {
-    return this.theme.fg("borderAccent", left + "─".repeat(Math.max(0, width - 2)) + right);
-  }
-
-  private frame(content: string, width: number): string {
-    const inner = padToWidth(content, Math.max(0, width - 2));
-    return this.theme.fg("borderAccent", "│") + inner + this.theme.fg("borderAccent", "│");
-  }
-
-  private scrollText(totalLines: number, viewportHeight: number): string {
-    const first = Math.min(totalLines, this.scrollOffset + 1);
-    const last = Math.min(totalLines, this.scrollOffset + viewportHeight);
-    const above = this.scrollOffset > 0 ? `↑ ${this.scrollOffset} above` : "top";
-    const below = last < totalLines ? `↓ ${totalLines - last} below` : "bottom";
-    return this.theme.fg("dim", `Showing ${first}-${last} of ${totalLines} lines (${above}, ${below})`);
-  }
-
-  private actionText(): string {
-    return CHECKPOINT_ACTIONS.map((action, index) => {
-      const label = ` ${index + 1}:${action.option} `;
-      return index === this.selectedIndex
-        ? this.theme.bg("selectedBg", this.theme.fg("accent", label))
-        : this.theme.fg("muted", label);
-    }).join(" ");
   }
 }

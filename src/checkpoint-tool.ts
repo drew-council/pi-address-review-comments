@@ -73,12 +73,10 @@ export function registerCheckpointTool(pi: ExtensionAPI, controller: CheckpointC
         content: [{ type: "text", text: `Waiting for approval: ${checkpoint.location}` }],
         details: { phase: "approval", threadId: checkpoint.threadId },
       });
+      // Rendered as a non-overlay picker so the checkpoint body in the transcript stays
+      // scrollable with pi's native transcript controls (wheel, PgUp/PgDn, Home/End).
       const selectedOption = await ctx.ui.custom<CheckpointOption | undefined>(
         (tui, theme, _keybindings, done) => new ReviewCheckpointDialog(tui, theme, checkpoint, done),
-        {
-          overlay: true,
-          overlayOptions: { anchor: "center", width: "90%", maxHeight: "90%", margin: 1 },
-        },
       );
 
       if (!selectedOption) {

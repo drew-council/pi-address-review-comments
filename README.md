@@ -53,8 +53,9 @@ resume through session entries.
 
 ## The checkpoint
 
-For every thread, the agent must call the `github_review_checkpoint` tool, which opens a scrollable
-dialog showing the reviewer, the location, the agent's analysis, and the exact draft reply:
+For every thread, the agent must call the `github_review_checkpoint` tool. The reviewer, location,
+agent analysis, and exact draft reply are rendered into the transcript, and a compact action picker
+opens in the editor area below it:
 
 | Action | Effect |
 | --- | --- |
@@ -65,8 +66,8 @@ dialog showing the reviewer, the location, the agent's analysis, and the exact d
 | `skip` | Post nothing; the agent reverts that thread's changes |
 | `abort` | Stop the workflow and summarize |
 
-`↑↓`/`PgUp`/`PgDn` scroll, `←→` choose, `1`-`6` pick directly, `Enter` confirms, and `Esc` aborts.
-Dismissing the dialog counts as `abort`.
+Pick with `↑↓` or `1`-`6`, then `Enter` to confirm or `Esc` to abort; dismissing the picker counts as
+`abort`.
 
 Every posted reply gets a standardized footer identifying the agent and its human supervisor:
 

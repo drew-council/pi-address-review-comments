@@ -122,53 +122,41 @@ export const CHECKPOINT_ACTIONS = [
     option: "resolve",
     label: "resolve - post the draft reply and resolve the thread",
     kind: "submit",
-    recommended: true,
-    terminal: true,
     resolveThread: true,
   },
   {
     option: "post",
     label: "post - post the draft reply only",
     kind: "submit",
-    recommended: true,
-    terminal: true,
     resolveThread: false,
   },
   {
     option: "edit",
     label: "edit - provide instructions to edit the draft reply",
     kind: "revise",
-    recommended: false,
-    terminal: false,
     prompt: "Describe how the draft reply should be edited.",
   },
   {
     option: "feedback",
     label: "feedback - provide feedback for the agent to address, then checkpoint again",
     kind: "revise",
-    recommended: false,
-    terminal: false,
     prompt: "Provide feedback for the agent to address before recreating this checkpoint.",
   },
   {
     option: "skip",
     label: "skip - post nothing for this thread",
     kind: "skip",
-    recommended: false,
-    terminal: true,
   },
   {
     option: "abort",
     label: "abort - stop processing remaining comments",
     kind: "abort",
-    recommended: false,
-    terminal: true,
   },
 ] as const;
 
 export type CheckpointAction = (typeof CHECKPOINT_ACTIONS)[number];
 export type CheckpointOption = CheckpointAction["option"];
-export type RecommendedAction = Extract<CheckpointAction, { recommended: true }>["option"];
+export type RecommendedAction = "resolve" | "post";
 
 export interface ExecResult {
   code: number;
