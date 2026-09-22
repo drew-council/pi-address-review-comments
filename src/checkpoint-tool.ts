@@ -1,14 +1,13 @@
-import path from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { writeReplyRequest } from "./artifacts.js";
 import { appendReplyAttribution, createReplyRequest, stripReplyAttribution } from "./attribution.js";
+import { type CheckpointBackend, createGitHubCheckpointBackend } from "./checkpoint-backend.js";
 import { checkpointAction, ReviewCheckpointDialog } from "./checkpoint-dialog.js";
 import { CHECKPOINT_ENTRY_TYPE, CHECKPOINT_TOOL_NAME, REVIEW_COMMAND } from "./constants.js";
 import { queueCheckpointFeedback } from "./feedback-message.js";
-import { GitHubClient, ReviewThreadResolveError } from "./github.js";
+import { ReviewThreadResolveError } from "./github.js";
 import type { CheckpointOption, CheckpointParams, RecommendedAction, ReplyResponse, WorkflowState } from "./types.js";
 
 const RECOMMENDED_ACTIONS = ["resolve", "post"] as const;
@@ -24,7 +23,11 @@ function isRecommendedAction(value: unknown): value is RecommendedAction {
   return typeof value === "string" && RECOMMENDED_ACTIONS.includes(value as RecommendedAction);
 }
 
-export function registerCheckpointTool(pi: ExtensionAPI, controller: CheckpointController): void {
+export function registerCheckpointTool(
+  pi: ExtensionAPI,
+  controller: CheckpointController,
+  backend: CheckpointBackend = createGitHubCheckpointBackend(pi),
+): void {
   pi.registerTool({
     name: CHECKPOINT_TOOL_NAME,
     label: "Review Checkpoint",
@@ -80,6 +83,7 @@ export function registerCheckpointTool(pi: ExtensionAPI, controller: CheckpointC
       );
 
       if (!selectedOption) {
+        await backend.recordDecision({ checkpoint, selectedOption: "abort", dismissed: true });
         controller.finish(ctx);
         return {
           content: [
@@ -95,6 +99,7 @@ export function registerCheckpointTool(pi: ExtensionAPI, controller: CheckpointC
       const action = checkpointAction(selectedOption);
       if (action.kind === "revise") {
         const userText = queueCheckpointFeedback(pi, (await ctx.ui.editor(action.prompt, "")) ?? "");
+        await backend.recordDecision({ checkpoint, selectedOption, feedback: userText });
         return {
           content: [
             {
@@ -109,6 +114,7 @@ export function registerCheckpointTool(pi: ExtensionAPI, controller: CheckpointC
       }
 
       if (action.kind === "abort") {
+        await backend.recordDecision({ checkpoint, selectedOption });
         controller.finish(ctx);
         return {
           content: [{ type: "text", text: "User selected abort. Stop processing and summarize the current state." }],
@@ -117,6 +123,7 @@ export function registerCheckpointTool(pi: ExtensionAPI, controller: CheckpointC
       }
 
       if (action.kind === "skip") {
+        await backend.recordDecision({ checkpoint, selectedOption });
         pi.appendEntry(CHECKPOINT_ENTRY_TYPE, {
           threadId: checkpoint.threadId,
           selectedOption,
@@ -154,16 +161,13 @@ export function registerCheckpointTool(pi: ExtensionAPI, controller: CheckpointC
         ],
         details: { phase: "submitting", selectedOption, threadId: checkpoint.threadId },
       });
-      await writeReplyRequest(workflow.artifactDirectory || path.dirname(workflow.fetchResponsePath), replyRequest);
-      const client = new GitHubClient((command, args, options) => pi.exec(command, args, options), workflow.repoRoot);
       let response: ReplyResponse;
       try {
-        response = await client.submitReply(
-          checkpoint.threadId,
-          replyRequest.comment,
-          action.resolveThread,
+        response = await backend.submitReply({
+          workflow,
+          request: replyRequest,
           signal,
-          (reply) => {
+          onReplyPosted: (reply) => {
             if (!action.resolveThread) return;
             onUpdate?.({
               content: [{ type: "text", text: "Reply posted; resolving review thread…" }],
@@ -175,9 +179,24 @@ export function registerCheckpointTool(pi: ExtensionAPI, controller: CheckpointC
               },
             });
           },
-        );
+        });
       } catch (error) {
-        if (!(error instanceof ReviewThreadResolveError)) throw error;
+        if (!(error instanceof ReviewThreadResolveError)) {
+          await backend.recordDecision({
+            checkpoint,
+            selectedOption,
+            request: replyRequest,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
+        await backend.recordDecision({
+          checkpoint,
+          selectedOption,
+          request: replyRequest,
+          reply: error.reply,
+          error: error.message,
+        });
         pi.appendEntry(CHECKPOINT_ENTRY_TYPE, {
           threadId: checkpoint.threadId,
           selectedOption: "resolve-failed",
@@ -210,6 +229,7 @@ export function registerCheckpointTool(pi: ExtensionAPI, controller: CheckpointC
           },
         };
       }
+      await backend.recordDecision({ checkpoint, selectedOption, request: replyRequest, response });
       pi.appendEntry(CHECKPOINT_ENTRY_TYPE, {
         threadId: checkpoint.threadId,
         selectedOption,

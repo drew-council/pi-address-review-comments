@@ -13,12 +13,14 @@
   ],
   "files": [
     "src",
+    "mock",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "check": "biome ci . && tsc -p tsconfig.json && bun test",
     "check:fix": "biome check --write --unsafe . && tsc -p tsconfig.json && bun test",
+    "mock": "bun mock/run.ts",
     "test": "bun test",
     "prepublishOnly": "bun run check && npm pack --dry-run"
   },

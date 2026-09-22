@@ -69,6 +69,19 @@ opens in the editor area below it:
 Pick with `↑↓` or `1`-`6`, then `Enter` to confirm or `Esc` to abort; dismissing the picker counts as
 `abort`.
 
+### Interactive preview
+
+Run `bun run mock` to launch a real interactive pi agent against a disposable repository with two
+synthetic review threads. It uses your normal configured model, but disables GitHub CLI access and
+replaces reply submission with a local mock backend. Each run recreates `.mock/repo`; checkpoint
+decisions remain available in `.mock/actions.jsonl` after pi exits.
+
+Additional pi options can be forwarded after `--`, for example:
+
+```bash
+bun run mock -- --model sonnet --tui-mode fullscreen
+```
+
 Every posted reply gets a standardized footer identifying the agent and its human supervisor:
 
 ```

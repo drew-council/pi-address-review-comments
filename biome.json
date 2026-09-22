@@ -1,6 +1,6 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
-  "files": { "ignoreUnknown": true },
+  "files": { "ignoreUnknown": true, "includes": ["**", "!!**/.mock"] },
   "formatter": {
     "enabled": true,
     "indentStyle": "space",
