@@ -351,6 +351,110 @@ test("maps review-thread pagination and fetches extra comment pages", async () =
   expect(calls[1]).toContain("after=comments-next");
 });
 
+test("maps emoji reactions on review comments and top-level reviews with author attribution", async () => {
+  const exec: CommandExecutor = async (_command, args) => {
+    const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+    if (query.includes("query($owner:")) {
+      return success(
+        JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                reviews: {
+                  nodes: [
+                    {
+                      body: "Overall looks good.",
+                      author: { __typename: "User", login: "reviewer" },
+                      reactions: {
+                        nodes: [
+                          { content: "HEART", user: { login: "pr-author" } },
+                          { content: "EYES", user: { login: "reviewer-two" } },
+                        ],
+                      },
+                    },
+                  ],
+                },
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "thread-1",
+                      isResolved: false,
+                      isOutdated: false,
+                      path: "src/file.ts",
+                      line: 5,
+                      comments: {
+                        nodes: [
+                          {
+                            body: "Please handle the empty case.",
+                            diffHunk: "@@ -1 +1 @@",
+                            author: { __typename: "User", login: "reviewer" },
+                            reactions: {
+                              nodes: [
+                                { content: "THUMBS_UP", user: { login: "pr-author" } },
+                                { content: "ROCKET", user: { login: "reviewer-two" } },
+                                { content: "UNKNOWN_FUTURE", user: { login: "pr-author" } },
+                              ],
+                            },
+                          },
+                          {
+                            body: "Agreed, fixing now.",
+                            diffHunk: "",
+                            author: { __typename: "User", login: "pr-author" },
+                            reactions: { nodes: [{ content: "THUMBS_UP", user: null }] },
+                          },
+                        ],
+                        pageInfo: { hasNextPage: true, endCursor: "comments-next" },
+                      },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        }),
+      );
+    }
+    if (query.includes("query($id:")) {
+      return success(
+        JSON.stringify({
+          data: {
+            node: {
+              __typename: "PullRequestReviewThread",
+              comments: {
+                nodes: [
+                  {
+                    body: "Follow-up without reactions",
+                    diffHunk: "",
+                    author: { __typename: "User", login: "reviewer" },
+                    reactions: { nodes: [] },
+                  },
+                ],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        }),
+      );
+    }
+    throw new Error(`Unexpected query: ${query.slice(0, 80)}`);
+  };
+
+  const result = await new GitHubClient(exec, "/repo").fetchReviewThreads("owner/repo", 42);
+  expect(result.reviews[0]?.reactions).toEqual([
+    { content: "HEART", author: "pr-author" },
+    { content: "EYES", author: "reviewer-two" },
+  ]);
+  const comments = result.threads[0]?.comments ?? [];
+  expect(comments[0]?.reactions).toEqual([
+    { content: "THUMBS_UP", author: "pr-author" },
+    { content: "ROCKET", author: "reviewer-two" },
+    { content: "UNKNOWN_FUTURE", author: "pr-author" },
+  ]);
+  expect(comments[1]?.reactions).toEqual([{ content: "THUMBS_UP", author: null }]);
+  expect(comments[2]?.reactions).toBeUndefined();
+});
+
 test("treats configured review-bot logins as bots", async () => {
   const exec: CommandExecutor = async () =>
     success(

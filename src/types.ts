@@ -1,7 +1,15 @@
+/** A single emoji reaction on a review comment, attributed to the user who left it. */
+export interface CommentReaction {
+  /** GitHub API reaction name, e.g. THUMBS_UP or EYES. */
+  content: string;
+  author: string | null;
+}
+
 export interface ReviewComment {
   body: string;
   author: string | null;
   author_is_bot: boolean;
+  reactions?: CommentReaction[];
 }
 
 export interface ReviewThread {

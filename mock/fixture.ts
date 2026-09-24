@@ -93,6 +93,7 @@ export function createMockFetchResponse(diffPath: string): FetchResponse {
             body: "discountPercent is a whole percentage (20 means 20%), so this needs to divide by 100 before subtracting it.",
             author: "reviewer-one",
             author_is_bot: false,
+            reactions: [{ content: "THUMBS_UP", author: "mock-author" }],
           },
         ],
       },
@@ -122,6 +123,10 @@ export function createMockFetchResponse(diffPath: string): FetchResponse {
         body: "Please keep the public function names stable and make sure the new examples are covered by tests.",
         author: "reviewer-one",
         author_is_bot: false,
+        reactions: [
+          { content: "EYES", author: "reviewer-two" },
+          { content: "HOORAY", author: "mock-author" },
+        ],
       },
     ],
     stack: null,

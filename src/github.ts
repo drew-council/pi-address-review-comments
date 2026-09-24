@@ -2,6 +2,7 @@ import { stripReplyAttribution } from "./attribution.js";
 import { DEFAULT_BOT_LOGINS } from "./config.js";
 import type {
   CommandExecutor,
+  CommentReaction,
   PullRequestRecord,
   PullRequestStack,
   PullRequestStackEntry,
@@ -21,6 +22,9 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
         nodes {
           body
           author { __typename login }
+          reactions(first: 100) {
+            nodes { content user { login } }
+          }
         }
       }
       reviewThreads(first: 100, after: $after) {
@@ -36,6 +40,9 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
               body
               diffHunk
               author { __typename login }
+              reactions(first: 100) {
+                nodes { content user { login } }
+              }
             }
             pageInfo { hasNextPage endCursor }
           }
@@ -85,6 +92,9 @@ query($id: ID!, $after: String) {
           body
           diffHunk
           author { __typename login }
+          reactions(first: 100) {
+            nodes { content user { login } }
+          }
         }
         pageInfo { hasNextPage endCursor }
       }
@@ -124,6 +134,16 @@ interface GraphqlComment {
   body?: string;
   diffHunk?: string;
   author?: GraphqlAuthor | null;
+  reactions?: ReactionConnection | null;
+}
+
+interface GraphqlReaction {
+  content?: string | null;
+  user?: { login?: string } | null;
+}
+
+interface ReactionConnection {
+  nodes?: GraphqlReaction[];
 }
 
 interface PageInfo {
@@ -232,10 +252,18 @@ function mapStackEntry(entry: GraphqlStackEntry, currentPullNumber: number): Pul
 }
 
 function mapComment(comment: GraphqlComment, botLogins: ReadonlySet<string>): ReviewComment {
+  const reactions = (comment.reactions?.nodes ?? [])
+    .map((reaction): CommentReaction | null => {
+      const content = reaction.content;
+      if (!content) return null;
+      return { content, author: reaction.user?.login ?? null };
+    })
+    .filter((reaction): reaction is CommentReaction => reaction !== null);
   return {
     body: stripReplyAttribution(comment.body ?? ""),
     author: comment.author?.login ?? null,
     author_is_bot: isBot(comment.author, botLogins),
+    ...(reactions.length > 0 ? { reactions } : {}),
   };
 }
 
