@@ -14,16 +14,22 @@ import type {
   StackEntryStatus,
 } from "./types.js";
 
+// GitHub counts the product of nested connection page sizes before returning any results.
+// 100 threads × 100 comments × 100 reactions exceeds its 500,000-node limit.
+const REACTIONS_PAGE_SIZE = 20;
+
 const THREADS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviews(first: 100) {
         nodes {
+          id
           body
           author { __typename login }
-          reactions(first: 100) {
+          reactions(first: ${REACTIONS_PAGE_SIZE}) {
             nodes { content user { login } }
+            pageInfo { hasNextPage endCursor }
           }
         }
       }
@@ -37,11 +43,13 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
           startLine
           comments(first: 100) {
             nodes {
+              id
               body
               diffHunk
               author { __typename login }
-              reactions(first: 100) {
+              reactions(first: ${REACTIONS_PAGE_SIZE}) {
                 nodes { content user { login } }
+                pageInfo { hasNextPage endCursor }
               }
             }
             pageInfo { hasNextPage endCursor }
@@ -89,13 +97,28 @@ query($id: ID!, $after: String) {
     ... on PullRequestReviewThread {
       comments(first: 100, after: $after) {
         nodes {
+          id
           body
           diffHunk
           author { __typename login }
-          reactions(first: 100) {
+          reactions(first: ${REACTIONS_PAGE_SIZE}) {
             nodes { content user { login } }
+            pageInfo { hasNextPage endCursor }
           }
         }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`;
+
+const ADDITIONAL_REACTIONS_QUERY = `
+query($id: ID!, $after: String!) {
+  node(id: $id) {
+    __typename
+    ... on Reactable {
+      reactions(first: 100, after: $after) {
+        nodes { content user { login } }
         pageInfo { hasNextPage endCursor }
       }
     }
@@ -131,6 +154,7 @@ interface GraphqlAuthor {
 }
 
 interface GraphqlComment {
+  id?: string;
   body?: string;
   diffHunk?: string;
   author?: GraphqlAuthor | null;
@@ -144,6 +168,7 @@ interface GraphqlReaction {
 
 interface ReactionConnection {
   nodes?: GraphqlReaction[];
+  pageInfo?: PageInfo;
 }
 
 interface PageInfo {
@@ -251,14 +276,24 @@ function mapStackEntry(entry: GraphqlStackEntry, currentPullNumber: number): Pul
   };
 }
 
-function mapComment(comment: GraphqlComment, botLogins: ReadonlySet<string>): ReviewComment {
-  const reactions = (comment.reactions?.nodes ?? [])
+function mapReactions(connection: ReactionConnection | null | undefined): CommentReaction[] {
+  return (connection?.nodes ?? [])
     .map((reaction): CommentReaction | null => {
       const content = reaction.content;
       if (!content) return null;
       return { content, author: reaction.user?.login ?? null };
     })
     .filter((reaction): reaction is CommentReaction => reaction !== null);
+}
+
+function nextReactionCursor(connection: ReactionConnection | null | undefined, id: string): string | undefined {
+  if (!connection?.pageInfo?.hasNextPage) return undefined;
+  if (!connection.pageInfo.endCursor) throw new Error(`GitHub returned a reaction page without a cursor for ${id}.`);
+  return connection.pageInfo.endCursor;
+}
+
+function mapComment(comment: GraphqlComment, botLogins: ReadonlySet<string>): ReviewComment {
+  const reactions = mapReactions(comment.reactions);
   return {
     body: stripReplyAttribution(comment.body ?? ""),
     author: comment.author?.login ?? null,
@@ -380,6 +415,29 @@ export class GitHubClient {
     return { number: stack.number, trunk: stack.baseRefName, size: stack.size ?? entries.length, entries };
   }
 
+  private async mapCommentWithReactions(comment: GraphqlComment, signal?: AbortSignal): Promise<ReviewComment> {
+    const mapped = mapComment(comment, this.botLogins);
+    let after = nextReactionCursor(comment.reactions, comment.id ?? "unknown comment");
+    if (!after) return mapped;
+    if (!comment.id) throw new Error("GitHub returned a comment with more reactions but no id.");
+    const reactions = [...(mapped.reactions ?? [])];
+    while (after) {
+      const response = await this.graphql<{
+        node?: { __typename?: string; reactions?: ReactionConnection } | null;
+      }>(ADDITIONAL_REACTIONS_QUERY, { id: comment.id, after }, { signal });
+      if (
+        response.node?.__typename !== "PullRequestReview" &&
+        response.node?.__typename !== "PullRequestReviewComment"
+      ) {
+        throw new Error(`Unable to fetch additional reactions for comment ${comment.id}.`);
+      }
+      if (!response.node.reactions) throw new Error(`GitHub returned no reactions for comment ${comment.id}.`);
+      reactions.push(...mapReactions(response.node.reactions));
+      after = nextReactionCursor(response.node.reactions, comment.id);
+    }
+    return { ...mapped, reactions };
+  }
+
   private async fetchAdditionalComments(
     threadId: string,
     cursor: string,
@@ -397,7 +455,11 @@ export class GitHubClient {
         throw new Error(`Unable to fetch additional comments for review thread ${threadId}.`);
       }
       const connection = response.node.comments;
-      comments.push(...(connection?.nodes ?? []).map((comment) => mapComment(comment, this.botLogins)));
+      comments.push(
+        ...(await Promise.all(
+          (connection?.nodes ?? []).map((comment) => this.mapCommentWithReactions(comment, signal)),
+        )),
+      );
       after = connection?.pageInfo?.hasNextPage ? (connection.pageInfo.endCursor ?? undefined) : undefined;
     }
     return comments;
@@ -406,7 +468,7 @@ export class GitHubClient {
   private async mapThread(node: GraphqlThread, signal?: AbortSignal): Promise<ReviewThread> {
     if (!node.id) throw new Error("GitHub returned a review thread without an id.");
     const initialComments = node.comments?.nodes ?? [];
-    const comments = initialComments.map((comment) => mapComment(comment, this.botLogins));
+    const comments = await Promise.all(initialComments.map((comment) => this.mapCommentWithReactions(comment, signal)));
     const nextCursor = node.comments?.pageInfo?.hasNextPage ? node.comments.pageInfo.endCursor : undefined;
     if (nextCursor) comments.push(...(await this.fetchAdditionalComments(node.id, nextCursor, signal)));
     const startLine = node.startLine ?? node.line ?? null;
@@ -442,9 +504,11 @@ export class GitHubClient {
       }>(THREADS_QUERY, { owner, name, number: pullNumber, after }, { signal });
       const connection = response.repository?.pullRequest?.reviewThreads;
       if (!connection) throw new Error(`PR #${pullNumber} was not found in ${repository}.`);
-      reviews = (response.repository?.pullRequest?.reviews?.nodes ?? [])
-        .map((comment) => mapComment(comment, this.botLogins))
-        .filter((review) => review.body.trim() !== "");
+      reviews = await Promise.all(
+        (response.repository?.pullRequest?.reviews?.nodes ?? [])
+          .filter((comment) => (comment.body ?? "").trim() !== "")
+          .map((comment) => this.mapCommentWithReactions(comment, signal)),
+      );
       // Extra comment pages are fetched concurrently across threads in this page.
       threads.push(...(await Promise.all((connection.nodes ?? []).map((node) => this.mapThread(node, signal)))));
       after = connection.pageInfo?.hasNextPage ? (connection.pageInfo.endCursor ?? undefined) : undefined;

@@ -455,6 +455,142 @@ test("maps emoji reactions on review comments and top-level reviews with author 
   expect(comments[2]?.reactions).toBeUndefined();
 });
 
+test("bounds nested reaction connections and fetches remaining reactions by comment id", async () => {
+  const calls: string[] = [];
+  const exec: CommandExecutor = async (_command, args) => {
+    const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+    calls.push(query);
+    if (query.includes("query($owner:")) {
+      expect(query).toContain("reviewThreads(first: 100");
+      expect(query.match(/reactions\(first: 20\)/g)).toHaveLength(2);
+      return success(
+        JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                reviews: {
+                  nodes: [
+                    {
+                      id: "review-1",
+                      body: "Summary",
+                      author: { login: "reviewer" },
+                      reactions: {
+                        nodes: [{ content: "HEART", user: { login: "author" } }],
+                        pageInfo: { hasNextPage: true, endCursor: "review-next" },
+                      },
+                    },
+                  ],
+                },
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "thread-1",
+                      isResolved: false,
+                      path: "src/file.ts",
+                      comments: {
+                        nodes: [
+                          {
+                            id: "comment-1",
+                            body: "Please fix",
+                            author: { login: "reviewer" },
+                            reactions: {
+                              nodes: [{ content: "EYES", user: { login: "author" } }],
+                              pageInfo: { hasNextPage: true, endCursor: "inline-next" },
+                            },
+                          },
+                        ],
+                        pageInfo: { hasNextPage: true, endCursor: "comments-next" },
+                      },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false },
+                },
+              },
+            },
+          },
+        }),
+      );
+    }
+    if (query.includes("query($id: ID!, $after: String)")) {
+      expect(query).toContain("reactions(first: 20)");
+      return success(
+        JSON.stringify({
+          data: {
+            node: {
+              __typename: "PullRequestReviewThread",
+              comments: {
+                nodes: [
+                  {
+                    id: "comment-2",
+                    body: "Follow-up",
+                    author: { login: "reviewer" },
+                    reactions: {
+                      nodes: [{ content: "ROCKET", user: { login: "author" } }],
+                      pageInfo: { hasNextPage: true, endCursor: "followup-next" },
+                    },
+                  },
+                ],
+                pageInfo: { hasNextPage: false },
+              },
+            },
+          },
+        }),
+      );
+    }
+    if (query.includes("query($id: ID!, $after: String!)")) {
+      expect(query).toContain("... on Reactable");
+      expect(query).toContain("reactions(first: 100, after: $after)");
+      const id = args.find((arg) => arg.startsWith("id="))?.slice(3);
+      const cursor = args.find((arg) => arg.startsWith("after="))?.slice(6);
+      const pages: Record<string, { typename: string; content: string; login: string; next?: string }> = {
+        "review-1:review-next": {
+          typename: "PullRequestReview",
+          content: "THUMBS_UP",
+          login: "reviewer",
+          next: "review-last",
+        },
+        "review-1:review-last": { typename: "PullRequestReview", content: "EYES", login: "author" },
+        "comment-1:inline-next": { typename: "PullRequestReviewComment", content: "THUMBS_UP", login: "reviewer" },
+        "comment-2:followup-next": { typename: "PullRequestReviewComment", content: "HOORAY", login: "reviewer" },
+      };
+      const page = pages[`${id}:${cursor}`];
+      if (!page) throw new Error(`Unexpected reaction page: ${id}:${cursor}`);
+      return success(
+        JSON.stringify({
+          data: {
+            node: {
+              __typename: page.typename,
+              reactions: {
+                nodes: [{ content: page.content, user: { login: page.login } }],
+                pageInfo: { hasNextPage: Boolean(page.next), endCursor: page.next ?? null },
+              },
+            },
+          },
+        }),
+      );
+    }
+    throw new Error(`Unexpected query: ${query.slice(0, 80)}`);
+  };
+
+  const result = await new GitHubClient(exec, "/repo").fetchReviewThreads("owner/repo", 42);
+  expect(result.reviews[0]?.reactions).toEqual([
+    { content: "HEART", author: "author" },
+    { content: "THUMBS_UP", author: "reviewer" },
+    { content: "EYES", author: "author" },
+  ]);
+  expect(result.threads[0]?.comments.map((comment) => comment.reactions)).toEqual([
+    [
+      { content: "EYES", author: "author" },
+      { content: "THUMBS_UP", author: "reviewer" },
+    ],
+    [
+      { content: "ROCKET", author: "author" },
+      { content: "HOORAY", author: "reviewer" },
+    ],
+  ]);
+  expect(calls).toHaveLength(6);
+});
+
 test("treats configured review-bot logins as bots", async () => {
   const exec: CommandExecutor = async () =>
     success(
